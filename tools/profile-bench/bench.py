@@ -142,27 +142,41 @@ def check_models(bin_path: Path, models: list[str]) -> None:
         raise SystemExit(1)
 
 
-def run_once(bin_path: Path, model: str, prompt: str, stats_file: Path) -> str:
+def log_name(model: str, n: int | str) -> str:
+    """File name for one run. ':' and '/' are not allowed in Windows file names."""
+    safe = model.replace(":", "_").replace("/", "_").replace("\\", "_")
+    return f"{safe}-{n}.log"
+
+
+def run_once(bin_path: Path, model: str, prompt: str, stats_file: Path,
+             log_file: Path) -> str:
     """Run one prompt in a new process so that no conversation carries over.
 
+    stdout and stderr (the answer and the profile output) go to log_file.
     Returns "ok", "exit <code>", "timeout" or "error: ...".
     """
     env = os.environ.copy()
     env["OLLAMA_STATS_FILE"] = str(stats_file)
-    try:
-        proc = subprocess.run(
-            [str(bin_path), "run", model, "--profile", prompt],
-            stdin=subprocess.DEVNULL,  # piped stdin would be prepended to the prompt
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=env,
-            timeout=RUN_TIMEOUT_SEC,
-        )
-    except subprocess.TimeoutExpired:
-        return "timeout"
-    except OSError as e:
-        return f"error: {e}"
-    return "ok" if proc.returncode == 0 else f"exit {proc.returncode}"
+    cmd = [str(bin_path), "run", model, "--profile", prompt]
+    with open(log_file, "wb") as log:
+        log.write(f"$ {bin_path.name} run {model} --profile {prompt!r}\n\n".encode("utf-8"))
+        log.flush()
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdin=subprocess.DEVNULL,  # piped stdin would be prepended to the prompt
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=env,
+                timeout=RUN_TIMEOUT_SEC,
+            )
+            status = "ok" if proc.returncode == 0 else f"exit {proc.returncode}"
+        except subprocess.TimeoutExpired:
+            status = "timeout"
+        except OSError as e:
+            status = f"error: {e}"
+        log.write(f"\n[bench] {status}\n".encode("utf-8"))
+    return status
 
 
 def stop_model(bin_path: Path, model: str) -> None:
@@ -182,9 +196,12 @@ def stop_model(bin_path: Path, model: str) -> None:
 def benchmark(bin_path: Path, models: list[str], prompts: list[str],
               repeat: int, cooldown: float, out: Path) -> int:
     """Warm up and measure every model. Returns the number of failed runs."""
-    out.mkdir(parents=True, exist_ok=True)
+    logs = out / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
     stats_file = out / "stats.jsonl"
     warmup_file = out / "warmup.jsonl"
+    total = len(models) * len(prompts) * repeat
+    done = 0
     failed = 0
     first = True
 
@@ -194,23 +211,40 @@ def benchmark(bin_path: Path, models: list[str], prompts: list[str],
             time.sleep(cooldown)
         first = False
 
+    def report(label: str, status: str, started: float) -> None:
+        print(f"{label} ... {status} ({time.monotonic() - started:.1f}s)", flush=True)
+
+    print(f"{len(models)} models x {len(prompts)} prompts x {repeat} runs = {total} runs, "
+          f"cooldown {cooldown:g}s")
+    print(f"results: {stats_file}")
     for model in models:
         # The first run includes model loading, so it is kept out of the results.
         wait()
-        status = run_once(bin_path, model, prompts[0], warmup_file)
-        if status != "ok":
-            print(f"warning: warmup of {model} failed ({status})", file=sys.stderr)
+        started = time.monotonic()
+        status = run_once(bin_path, model, prompts[0], warmup_file,
+                          logs / log_name(model, "warmup"))
+        report(f"[warmup] {model}", status, started)
 
+        n = 0
         for p_idx, prompt in enumerate(prompts, start=1):
             for r_idx in range(1, repeat + 1):
                 wait()
-                status = run_once(bin_path, model, prompt, stats_file)
+                done += 1
+                n += 1
+                started = time.monotonic()
+                status = run_once(bin_path, model, prompt, stats_file,
+                                  logs / log_name(model, n))
                 if status != "ok":
                     failed += 1
-                    print(f"warning: {model} prompt#{p_idx} run#{r_idx} failed ({status})",
-                          file=sys.stderr)
+                report(f"[{done}/{total}] {model} prompt#{p_idx} run#{r_idx}", status, started)
 
         stop_model(bin_path, model)
+
+    print(f"finished: {total - failed}/{total} runs succeeded")
+    print(f"results: {stats_file}")
+    print(f"logs:    {logs}")
+    if failed:
+        print("some runs failed: check their logs")
     return failed
 
 
