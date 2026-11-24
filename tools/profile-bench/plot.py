@@ -130,6 +130,78 @@ def write_csv(summaries: list[dict], path: Path) -> None:
             w.writerow(row)
 
 
+# (file name, title, y-axis label, mean key, std key)
+CHARTS = [
+    ("eval_rate.png", "Generation speed", "Tokens per second (tokens/s)",
+     "eval_rate_mean", "eval_rate_std"),
+    ("cpu_avg.png", "Average CPU usage (Ollama processes)", "CPU usage (%)",
+     "cpu_avg_mean", "cpu_avg_std"),
+    ("ram_peak.png", "Peak RAM usage (Ollama processes)", "RAM (GB)",
+     "ram_peak_gb_mean", "ram_peak_gb_std"),
+    ("gpu_avg.png", "Average GPU usage", "GPU usage (%)",
+     "gpu_avg_mean", "gpu_avg_std"),
+]
+
+BAR_COLOR = "#2a78d6"
+TEXT_PRIMARY = "#0b0b0b"
+TEXT_SECONDARY = "#52514e"
+GRID_COLOR = "#e4e3df"
+
+
+def draw_charts(summaries: list[dict], out: Path) -> list[Path]:
+    """One bar chart per metric: a bar per model with a standard deviation error bar.
+
+    Only English text is used so that no Korean font is needed on any OS.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")  # no display needed
+    import matplotlib.pyplot as plt
+
+    plt.rcParams.update({
+        "font.family": "DejaVu Sans",
+        "font.size": 11,
+        "axes.edgecolor": TEXT_SECONDARY,
+        "axes.labelcolor": TEXT_PRIMARY,
+        "xtick.color": TEXT_SECONDARY,
+        "ytick.color": TEXT_SECONDARY,
+    })
+    models = [s["model"] for s in summaries]
+    written = []
+    for name, title, ylabel, mkey, skey in CHARTS:
+        means = [s[mkey] for s in summaries]
+        stds = [s[skey] for s in summaries]
+        fig, ax = plt.subplots(figsize=(7, 4.5), dpi=150)
+        x = range(len(models))
+        heights = [m if m is not None else 0 for m in means]
+        errs = [e if e is not None else 0 for e in stds]
+        bars = ax.bar(x, heights, width=0.55, color=BAR_COLOR, yerr=errs, capsize=6,
+                      error_kw={"elinewidth": 1.2, "ecolor": TEXT_PRIMARY, "capthick": 1.2})
+        top = max([h + e for h, e in zip(heights, errs)] + [0])
+        for bar, m, e in zip(bars, means, errs):
+            label = "N/A" if m is None else f"{m:.1f}"
+            ax.annotate(label, (bar.get_x() + bar.get_width() / 2, (m or 0) + e),
+                        xytext=(0, 4), textcoords="offset points", ha="center",
+                        va="bottom", color=TEXT_PRIMARY, fontsize=10)
+        ax.set_xticks(list(x), models)
+        ax.set_xlabel("Model")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title, loc="left", color=TEXT_PRIMARY, fontsize=13, pad=12)
+        ax.set_ylim(0, top * 1.18 if top > 0 else 1)
+        ax.yaxis.grid(True, color=GRID_COLOR, linewidth=0.8)
+        ax.set_axisbelow(True)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        ax.text(1.0, -0.2, "Error bars: standard deviation across runs",
+                transform=ax.transAxes, ha="right", fontsize=8, color=TEXT_SECONDARY)
+        fig.tight_layout()
+        path = out / name
+        fig.savefig(path)
+        plt.close(fig)
+        written.append(path)
+    return written
+
+
 def print_table(summaries: list[dict]) -> None:
     cols = [("MODEL", "model"), ("RUNS", "runs"), ("TOKENS/S", "eval_rate_mean"),
             ("CPU AVG %", "cpu_avg_mean"), ("RAM PEAK GB", "ram_peak_gb_mean"),
@@ -153,6 +225,15 @@ def main(argv: list[str] | None = None) -> int:
     csv_path = out / "summary.csv"
     write_csv(summaries, csv_path)
     print(f"\nwrote {csv_path}")
+
+    try:
+        import matplotlib  # noqa: F401
+    except ImportError:
+        print("matplotlib is not installed, so only summary.csv was written.")
+        print("To draw the charts: pip install matplotlib")
+        return 0
+    for path in draw_charts(summaries, out):
+        print(f"wrote {path}")
     return 0
 
 
