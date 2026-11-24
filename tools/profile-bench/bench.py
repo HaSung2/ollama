@@ -19,10 +19,13 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 MIN_PYTHON = (3, 10)
 LIST_TIMEOUT_SEC = 60
+RUN_TIMEOUT_SEC = 300
+STOP_TIMEOUT_SEC = 60
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -139,6 +142,78 @@ def check_models(bin_path: Path, models: list[str]) -> None:
         raise SystemExit(1)
 
 
+def run_once(bin_path: Path, model: str, prompt: str, stats_file: Path) -> str:
+    """Run one prompt in a new process so that no conversation carries over.
+
+    Returns "ok", "exit <code>", "timeout" or "error: ...".
+    """
+    env = os.environ.copy()
+    env["OLLAMA_STATS_FILE"] = str(stats_file)
+    try:
+        proc = subprocess.run(
+            [str(bin_path), "run", model, "--profile", prompt],
+            stdin=subprocess.DEVNULL,  # piped stdin would be prepended to the prompt
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            timeout=RUN_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return "timeout"
+    except OSError as e:
+        return f"error: {e}"
+    return "ok" if proc.returncode == 0 else f"exit {proc.returncode}"
+
+
+def stop_model(bin_path: Path, model: str) -> None:
+    """Unload the model so that the next model starts from the same state."""
+    try:
+        subprocess.run(
+            [str(bin_path), "stop", model],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=STOP_TIMEOUT_SEC,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"warning: `stop {model}` failed: {e}", file=sys.stderr)
+
+
+def benchmark(bin_path: Path, models: list[str], prompts: list[str],
+              repeat: int, cooldown: float, out: Path) -> int:
+    """Warm up and measure every model. Returns the number of failed runs."""
+    out.mkdir(parents=True, exist_ok=True)
+    stats_file = out / "stats.jsonl"
+    warmup_file = out / "warmup.jsonl"
+    failed = 0
+    first = True
+
+    def wait() -> None:
+        nonlocal first
+        if not first and cooldown > 0:
+            time.sleep(cooldown)
+        first = False
+
+    for model in models:
+        # The first run includes model loading, so it is kept out of the results.
+        wait()
+        status = run_once(bin_path, model, prompts[0], warmup_file)
+        if status != "ok":
+            print(f"warning: warmup of {model} failed ({status})", file=sys.stderr)
+
+        for p_idx, prompt in enumerate(prompts, start=1):
+            for r_idx in range(1, repeat + 1):
+                wait()
+                status = run_once(bin_path, model, prompt, stats_file)
+                if status != "ok":
+                    failed += 1
+                    print(f"warning: {model} prompt#{p_idx} run#{r_idx} failed ({status})",
+                          file=sys.stderr)
+
+        stop_model(bin_path, model)
+    return failed
+
+
 def main(argv: list[str] | None = None) -> int:
     if sys.version_info < MIN_PYTHON:
         raise SystemExit("error: Python 3.10 or newer is required")
@@ -146,11 +221,9 @@ def main(argv: list[str] | None = None) -> int:
     bin_path = resolve_bin(args.bin)
     prompts = load_prompts(args.prompts)
     check_models(bin_path, args.models)
-    print(
-        f"{len(args.models)} models, {len(prompts)} prompts, "
-        f"{args.repeat} runs each: all models are installed"
-    )
-    return 0
+    out = Path(args.out).resolve()
+    failed = benchmark(bin_path, args.models, prompts, args.repeat, args.cooldown, out)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
