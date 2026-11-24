@@ -9,6 +9,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import statistics
 import sys
@@ -103,6 +104,32 @@ def fmt(v: float | None) -> str:
     return "N/A" if v is None else f"{v:.2f}"
 
 
+CSV_COLUMNS = [
+    "model", "runs",
+    "eval_rate_mean", "eval_rate_std",
+    "cpu_avg_mean", "cpu_avg_std",
+    "ram_peak_gb_mean",
+    "gpu_avg_mean",
+    "gpu_mem_peak_gb_mean",
+]
+
+
+def write_csv(summaries: list[dict], path: Path) -> None:
+    """summary.csv. A value that could not be measured (GPU N/A) is left empty."""
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(CSV_COLUMNS)
+        for s in summaries:
+            row = []
+            for k in CSV_COLUMNS:
+                v = s[k]
+                if k in ("model", "runs"):
+                    row.append(v)
+                else:
+                    row.append("" if v is None else f"{v:.2f}")
+            w.writerow(row)
+
+
 def print_table(summaries: list[dict]) -> None:
     cols = [("MODEL", "model"), ("RUNS", "runs"), ("TOKENS/S", "eval_rate_mean"),
             ("CPU AVG %", "cpu_avg_mean"), ("RAM PEAK GB", "ram_peak_gb_mean"),
@@ -120,6 +147,12 @@ def main(argv: list[str] | None = None) -> int:
     records = load_records(args.inp)
     summaries = aggregate(records, args.order)
     print_table(summaries)
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    csv_path = out / "summary.csv"
+    write_csv(summaries, csv_path)
+    print(f"\nwrote {csv_path}")
     return 0
 
 
