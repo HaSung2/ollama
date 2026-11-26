@@ -65,6 +65,8 @@ func generateInteractive(cmd *cobra.Command, opts runOptions) error {
 		fmt.Fprintln(os.Stderr, "  /set noformat          Disable formatting")
 		fmt.Fprintln(os.Stderr, "  /set verbose           Show LLM stats")
 		fmt.Fprintln(os.Stderr, "  /set quiet             Disable LLM stats")
+		fmt.Fprintln(os.Stderr, "  /set profile           Show CPU/RAM/GPU usage")
+		fmt.Fprintln(os.Stderr, "  /set noprofile         Disable CPU/RAM/GPU usage")
 		fmt.Fprintln(os.Stderr, "  /set think             Enable thinking")
 		fmt.Fprintln(os.Stderr, "  /set nothink           Disable thinking")
 		fmt.Fprintln(os.Stderr, "")
@@ -326,6 +328,17 @@ func generateInteractive(cmd *cobra.Command, opts runOptions) error {
 						return err
 					}
 					fmt.Println("Set 'quiet' mode.")
+
+				case "profile":
+					if err := cmd.Flags().Set("profile", "true"); err != nil {
+						return err
+					}
+					fmt.Println("Set 'profile' mode.")
+				case "noprofile":
+					if err := cmd.Flags().Set("profile", "false"); err != nil {
+						return err
+					}
+					fmt.Println("Set 'noprofile' mode.")
 				case "think":
 					thinkValue := api.ThinkValue{Value: true}
 					var maybeLevel string

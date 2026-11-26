@@ -681,7 +681,7 @@ func loadOrUnloadModel(cmd *cobra.Command, opts *runOptions) error {
 				remoteModel = opts.Model
 			}
 			if isCloud {
-				fmt.Fprintf(os.Stderr, "Connecting to '%s' on 'ollama.com' ⚡\n", remoteModel)
+				fmt.Fprintf(os.Stderr, "Connecting to '%s' on 'ollama.com' ??n", remoteModel)
 			} else {
 				fmt.Fprintf(os.Stderr, "Connecting to '%s' on '%s'\n", remoteModel, info.RemoteHost)
 			}
@@ -901,6 +901,12 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 		}
 		opts.KeepAlive = &api.Duration{Duration: d}
 	}
+
+	profile, err := cmd.Flags().GetBool("profile")
+	if err != nil {
+		return err
+	}
+	opts.Profile = profile
 
 	prompts := args[1:]
 	stdinPiped := !term.IsTerminal(int(os.Stdin.Fd()))
@@ -1852,6 +1858,7 @@ type runOptions struct {
 	KeepAlive      *api.Duration
 	Think          *api.ThinkValue
 	HideThinking   bool
+	Profile        bool
 	ShowConnect    bool
 	Decision       bool
 	Questions      *api.SystemOneQuestions
@@ -2101,6 +2108,12 @@ func chat(cmd *cobra.Command, opts runOptions) (*api.Message, error) {
 	if opts.KeepAlive != nil {
 		req.KeepAlive = opts.KeepAlive
 	}
+	profile, _ := cmd.Flags().GetBool("profile")
+	var smp *Sampler
+	if opts.Profile || profile {
+		smp = newSampler(defaultSampleInterval)
+		smp.Start(cancelCtx)
+	}
 
 	if err := client.Chat(cancelCtx, req, fn); err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -2116,7 +2129,10 @@ func chat(cmd *cobra.Command, opts runOptions) (*api.Message, error) {
 		}
 		return nil, err
 	}
-
+	var profRes ProfileResult
+	if smp != nil {
+		profRes = smp.Stop()
+	}
 	if len(opts.Messages) > 0 {
 		fmt.Println()
 		fmt.Println()
@@ -2130,7 +2146,11 @@ func chat(cmd *cobra.Command, opts runOptions) (*api.Message, error) {
 	if verbose {
 		latest.Summary()
 	}
-
+	if opts.Profile || profile {
+		if cmd.Context().Err() == nil {
+			profRes.Print(os.Stderr)
+		}
+	}
 	return &api.Message{Role: role, Thinking: thinkingContent.String(), Content: fullResponse.String()}, nil
 }
 
@@ -2234,14 +2254,22 @@ func generate(cmd *cobra.Command, opts runOptions) error {
 		KeepAlive: opts.KeepAlive,
 		Think:     opts.Think,
 	}
-
+	profile, _ := cmd.Flags().GetBool("profile")
+	var smp *Sampler
+	if opts.Profile || profile {
+		smp = newSampler(defaultSampleInterval)
+		smp.Start(ctx)
+	}
 	if err := client.Generate(ctx, &request, fn); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil
 		}
 		return err
 	}
-
+	var profRes ProfileResult
+	if smp != nil {
+		profRes = smp.Stop()
+	}
 	if opts.Prompt != "" {
 		fmt.Println()
 		fmt.Println()
@@ -2259,7 +2287,11 @@ func generate(cmd *cobra.Command, opts runOptions) error {
 	if verbose {
 		latest.Summary()
 	}
-
+	if opts.Profile || profile {
+		if cmd.Context().Err() == nil {
+			profRes.Print(os.Stderr)
+		}
+	}
 	ctx = context.WithValue(cmd.Context(), generateContextKey("context"), latest.Context)
 	cmd.SetContext(ctx)
 
@@ -2624,6 +2656,7 @@ func NewCLI() *cobra.Command {
 
 	runCmd.Flags().String("keepalive", "", "Duration to keep a model loaded (e.g. 5m)")
 	runCmd.Flags().Bool("verbose", false, "Show timings for response")
+	runCmd.Flags().Bool("profile", false, "Show CPU/RAM/GPU usage")
 	runCmd.Flags().Bool("insecure", false, "Use an insecure registry")
 	runCmd.Flags().Bool("nowordwrap", false, "Don't wrap words to the next line automatically")
 	runCmd.Flags().String("format", "", "Response format (e.g. json)")
