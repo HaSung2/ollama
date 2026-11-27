@@ -128,7 +128,70 @@ Set 'noprofile' mode.
 
 ## 5. `ollama stats` 옵션
 
+`--profile`로 측정한 결과는 실행할 때마다 자동으로 기록 파일에 한 줄씩 쌓인다(샘플이 0개인 응답은 저장하지 않는다). `ollama stats`는 이 기록을 표로 보여준다. 서버에 연결하지 않으므로 Ollama 앱이 꺼져 있어도 실행된다.
+
+```bash
+./ollama-dev stats                  # 최근 기록 목록 + 모델별 평균
+./ollama-dev stats llama3.2         # llama3.2의 모든 태그(llama3.2:1b, llama3.2:3b 등)만
+./ollama-dev stats llama3.2:3b      # 해당 태그만
+./ollama-dev stats --limit 3        # 최근 3개만
+./ollama-dev stats --summary        # 모델별 평균 표만
+```
+
+| 옵션 | 기본값 | 설명 |
+|---|---|---|
+| `MODEL` | 없음 | 해당 모델만 표시한다. 태그 없이 주면(`llama3.2`) 그 모델의 모든 태그를 포함한다. |
+| `--limit N` | 20 | 기록 목록에서 최신 N개만 표시한다. |
+| `--summary` | 끔 | 기록 목록 없이 모델별 평균 표만 출력한다. |
+
+### 기록 목록 표
+
+| 열 | 의미 |
+|---|---|
+| `TIME` | 실행 시각(`2006-01-02 15:04` 형식) |
+| `MODEL` | 모델 이름 |
+| `PROMPT` | 프롬프트 앞 40자(줄바꿈은 공백으로 바뀜) |
+| `TOKENS/S` | 생성 속도 = 생성 토큰 수 / 생성 시간(초) |
+| `CPU AVG`, `CPU PEAK` | CPU 평균, 최댓값(%) |
+| `RAM PEAK` | RAM 최댓값(GB) |
+| `GPU AVG`, `GPU PEAK` | GPU 평균, 최댓값(%). 읽지 못했으면 `N/A` |
+| `GPU MEM` | GPU 메모리 최댓값(GB) |
+
+### 모델별 평균 표
+
+기록 목록 아래에 빈 줄을 두고 모델별 평균 표가 나온다. 열은 `MODEL | RUNS | TOKENS/S | CPU AVG | CPU PEAK | RAM PEAK | GPU AVG | GPU PEAK | GPU MEM`이다. `RUNS`는 기록 수이고, 나머지는 실행별 값의 평균이다. GPU 평균은 `N/A`인 실행을 빼고 계산하며, 모든 실행이 `N/A`면 `N/A`로 표시한다. 모델은 이름순으로 정렬된다.
+
+기록이 하나도 없으면 다음 안내가 나온다.
+
+```
+No profile records yet. Run 'ollama run MODEL --profile' first.
+```
+
 ## 6. 기록 파일 위치와 `OLLAMA_STATS_FILE`
+
+| OS | 기본 위치 |
+|---|---|
+| macOS | `~/.ollama/stats.jsonl` |
+| Windows | `C:\Users\<사용자>\.ollama\stats.jsonl` |
+
+환경변수 `OLLAMA_STATS_FILE`을 지정하면 기본 위치 대신 그 파일을 쓴다. 측정 스크립트(`tools/profile-bench/bench.py`)가 결과를 따로 모을 때, 테스트에서 실제 기록을 건드리지 않을 때 쓴다.
+
+```bash
+# macOS
+OLLAMA_STATS_FILE=/tmp/test.jsonl ./ollama-dev stats
+```
+```powershell
+# Windows PowerShell
+$env:OLLAMA_STATS_FILE = "C:\temp\test.jsonl"; .\ollama-dev.exe stats
+```
+
+파일은 JSON Lines 형식으로, 한 줄이 실행 1회다.
+
+```json
+{"time":"2026-11-20T14:03:11+09:00","model":"llama3.2:3b","prompt":"양자역학을 설명해줘","os":"darwin","eval_count":198,"eval_rate":24.8,"total_ms":8120,"cpu_avg":38.2,"cpu_peak":71.0,"ram_peak":12025908224,"gpu_avg":92.1,"gpu_peak":100,"gpu_mem_peak":2791728742}
+```
+
+`ram_peak`, `gpu_mem_peak`는 byte 단위이고, GPU를 읽지 못하면 `gpu_avg`, `gpu_peak`가 -1이다. 깨진 줄은 읽을 때 건너뛰므로 파일 일부가 손상되어도 나머지 기록은 그대로 보인다. 기록을 지우고 싶으면 이 파일을 삭제하거나 다른 이름으로 옮긴다.
 
 ## 7. 측정 방식
 
