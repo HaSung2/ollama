@@ -127,3 +127,68 @@ func TestSummarizeManySamples(t *testing.T) {
 		want:    ProfileResult{Samples: 1500, CPUAvg: 30, CPUPeak: 40, RAMPeak: 1499, GPUAvg: -1, GPUPeak: -1},
 	})
 }
+
+// TestSummarizeGPUMixed checks that samples with GPUPercent -1 are left out of
+// the GPU average and peak, while CPU and RAM still use every sample.
+func TestSummarizeGPUMixed(t *testing.T) {
+	cases := []summarizeCase{
+		{
+			name: "all GPU -1",
+			samples: []ProfileSample{
+				{CPUPercent: 10, RAMUsed: edgeGB, GPUPercent: -1},
+				{CPUPercent: 30, RAMUsed: 2 * edgeGB, GPUPercent: -1},
+			},
+			want: ProfileResult{Samples: 2, CPUAvg: 20, CPUPeak: 30, RAMPeak: 2 * edgeGB,
+				GPUAvg: -1, GPUPeak: -1, GPUMemPeak: 0},
+		},
+		{
+			name: "one GPU -1 among valid samples",
+			samples: []ProfileSample{
+				{CPUPercent: 10, GPUPercent: 60, GPUMemUsed: edgeGB},
+				{CPUPercent: 20, GPUPercent: -1},
+				{CPUPercent: 30, GPUPercent: 90, GPUMemUsed: 2 * edgeGB},
+			},
+			// GPU average is (60+90)/2, not (60-1+90)/3 or (60+0+90)/3.
+			want: ProfileResult{Samples: 3, CPUAvg: 20, CPUPeak: 30,
+				GPUAvg: 75, GPUPeak: 90, GPUMemPeak: 2 * edgeGB},
+		},
+		{
+			name: "GPU -1 first, then valid",
+			samples: []ProfileSample{
+				{CPUPercent: 10, GPUPercent: -1},
+				{CPUPercent: 10, GPUPercent: -1},
+				{CPUPercent: 10, GPUPercent: 40, GPUMemUsed: edgeGB},
+			},
+			want: ProfileResult{Samples: 3, CPUAvg: 10, CPUPeak: 10,
+				GPUAvg: 40, GPUPeak: 40, GPUMemPeak: edgeGB},
+		},
+		{
+			name: "valid first, then GPU -1",
+			samples: []ProfileSample{
+				{CPUPercent: 10, GPUPercent: 40, GPUMemUsed: edgeGB},
+				{CPUPercent: 10, GPUPercent: -1},
+			},
+			want: ProfileResult{Samples: 2, CPUAvg: 10, CPUPeak: 10,
+				GPUAvg: 40, GPUPeak: 40, GPUMemPeak: edgeGB},
+		},
+		{
+			// 0% is a valid reading (GPUPercent >= 0), so the result is 0, not N/A.
+			name: "GPU idle at 0 percent is valid",
+			samples: []ProfileSample{
+				{CPUPercent: 5, GPUPercent: 0},
+				{CPUPercent: 5, GPUPercent: 0},
+			},
+			want: ProfileResult{Samples: 2, CPUAvg: 5, CPUPeak: 5, GPUAvg: 0, GPUPeak: 0},
+		},
+		{
+			name: "single sample with GPU -1",
+			samples: []ProfileSample{
+				{CPUPercent: 50, RAMUsed: edgeGB, GPUPercent: -1},
+			},
+			want: ProfileResult{Samples: 1, CPUAvg: 50, CPUPeak: 50, RAMPeak: edgeGB, GPUAvg: -1, GPUPeak: -1},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) { checkSummarize(t, tc) })
+	}
+}
