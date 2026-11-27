@@ -5,9 +5,6 @@ import (
 	"runtime"
 	"sync"
 	"time"
-
-	"github.com/shirou/gopsutil/v4/cpu"
-	"github.com/shirou/gopsutil/v4/mem"
 )
 
 // ProfileSample is one hardware-usage reading taken every sample interval.
@@ -145,17 +142,17 @@ func (s *Sampler) Stop() ProfileResult {
 
 // readSample takes one reading across CPU, RAM and GPU.
 //
-// H-1: CPU and RAM are system-wide values from gopsutil; H-3 replaces this
-// with the Ollama process totals. GPU comes from the OS-specific readGPU
-// (H-2 implements macOS; others return -1, 0).
+// CPU and RAM come from the Ollama process tree only (server + runner) via
+// defaultUsage, so other applications do not affect them. GPU comes from the
+// OS-specific readGPU (macOS via ioreg; others return -1, 0).
 func readSample() ProfileSample {
-	s := ProfileSample{At: time.Now(), GPUPercent: -1}
-	if pct, err := cpu.Percent(0, false); err == nil && len(pct) > 0 {
-		s.CPUPercent = pct[0]
+	cpuPct, ram := defaultUsage.sample()
+	gpuPct, gpuMem := readGPU()
+	return ProfileSample{
+		At:         time.Now(),
+		CPUPercent: cpuPct,
+		RAMUsed:    ram,
+		GPUPercent: gpuPct,
+		GPUMemUsed: gpuMem,
 	}
-	if vm, err := mem.VirtualMemory(); err == nil {
-		s.RAMUsed = vm.Used
-	}
-	s.GPUPercent, s.GPUMemUsed = readGPU()
-	return s
 }
