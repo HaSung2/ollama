@@ -3,8 +3,11 @@
 package cmd
 
 import (
+	"context"
+	"os/exec"
 	"regexp"
 	"strconv"
+	"time"
 )
 
 // IOKit exposes a PerformanceStatistics dictionary per accelerator through
@@ -13,6 +16,10 @@ var (
 	reGPUUtil = regexp.MustCompile(`"Device Utilization %"=(\d+)`)
 	reGPUMem  = regexp.MustCompile(`"In use system memory"=(\d+)`)
 )
+
+// gpuReadTimeout bounds a single ioreg call so a slow read cannot stall the
+// 0.2s sampler.
+const gpuReadTimeout = 100 * time.Millisecond
 
 // parseIOReg extracts GPU utilization and memory from the output of
 // `ioreg -c IOAccelerator`. When several accelerators are present, utilization
@@ -40,10 +47,20 @@ func parseIOReg(out []byte) (percent float64, mem uint64, ok bool) {
 	return maxUtil, memSum, true
 }
 
-// readGPU returns GPU utilization (percent, 0-100) and GPU memory in use
-// (bytes). On failure it returns (-1, 0).
-//
-// The real ioreg-backed implementation is added in the next commit.
+// readGPU reads GPU utilization (percent, 0-100) and memory in use (bytes)
+// from ioreg. It returns (-1, 0) on any failure (command error, timeout, or
+// no statistics found). No admin rights are required.
 func readGPU() (percent float64, memUsed uint64) {
-	return -1, 0
+	ctx, cancel := context.WithTimeout(context.Background(), gpuReadTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator").Output()
+	if err != nil {
+		return -1, 0
+	}
+	p, m, ok := parseIOReg(out)
+	if !ok {
+		return -1, 0
+	}
+	return p, m
 }
