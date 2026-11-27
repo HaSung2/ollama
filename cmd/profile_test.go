@@ -1,6 +1,11 @@
 package cmd
 
-import "testing"
+import (
+	"context"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 func TestSummarizeBasic(t *testing.T) {
 	samples := []ProfileSample{
@@ -89,5 +94,65 @@ func TestSummarizeEmpty(t *testing.T) {
 	}
 	if r.GPUAvg != -1 || r.GPUPeak != -1 {
 		t.Errorf("empty result GPU should be -1, got avg=%v peak=%v", r.GPUAvg, r.GPUPeak)
+	}
+}
+
+// Sampler collects whatever the injected read function returns and summarizes
+// it on Stop.
+func TestSamplerCollectsInjected(t *testing.T) {
+	s := newSampler(5 * time.Millisecond)
+	var n int64
+	s.read = func() ProfileSample {
+		i := atomic.AddInt64(&n, 1)
+		return ProfileSample{CPUPercent: float64(i * 10), RAMUsed: uint64(i * 100), GPUPercent: -1}
+	}
+
+	s.Start(context.Background())
+	time.Sleep(60 * time.Millisecond) // expect several ticks
+	r := s.Stop()
+
+	if r.Samples == 0 {
+		t.Fatal("no samples collected")
+	}
+	if r.CPUPeak <= 0 || r.RAMPeak == 0 {
+		t.Errorf("expected positive CPU/RAM peaks, got %+v", r)
+	}
+	if r.GPUAvg != -1 {
+		t.Errorf("GPUAvg = %v, want -1 (injected GPU is -1)", r.GPUAvg)
+	}
+}
+
+// Stop can be called more than once without panicking or blocking.
+func TestSamplerStopTwice(t *testing.T) {
+	s := newSampler(5 * time.Millisecond)
+	s.read = func() ProfileSample { return ProfileSample{GPUPercent: -1} }
+
+	s.Start(context.Background())
+	time.Sleep(20 * time.Millisecond)
+	first := s.Stop()
+	second := s.Stop()
+
+	if first.Samples != second.Samples {
+		t.Errorf("Stop twice gave different sample counts: %d vs %d", first.Samples, second.Samples)
+	}
+}
+
+// After the context is cancelled the goroutine stops on its own, and Stop
+// still returns without hanging.
+func TestSamplerContextCancel(t *testing.T) {
+	s := newSampler(5 * time.Millisecond)
+	s.read = func() ProfileSample { return ProfileSample{GPUPercent: -1} }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.Start(ctx)
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	done := make(chan struct{})
+	go func() { s.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop hung after context cancel")
 	}
 }
